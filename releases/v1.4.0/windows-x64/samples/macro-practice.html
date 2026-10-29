@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTR 버튼 매크로 연습 · 개발용 가상자료</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f1f5f9; color: #18314e; font: 17px/1.6 "Malgun Gothic", sans-serif; }
+  main { max-width: 920px; margin: 48px auto; padding: 32px; background: white; border: 1px solid #ccd6e2; border-radius: 16px; }
+  h1 { margin: 0 0 14px; font-size: 28px; }
+  p { margin: 12px 0; }
+  .notice { background: #fff4d9; border: 1px solid #eacb85; padding: 12px 16px; border-radius: 8px; }
+  .buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin: 28px 0; }
+  button { width: 100%; min-height: 100px; background: #1659ae; border: 0; border-radius: 10px; color: white; font: 700 21px "Malgun Gothic", sans-serif; cursor: pointer; }
+  button:focus-visible { outline: 4px solid #e59b13; outline-offset: 4px; }
+  .count { margin-top: 12px; text-align: center; font-size: 22px; font-weight: 700; }
+  #status { padding: 16px; background: #eef5ff; border-radius: 8px; min-height: 60px; }
+  small { color: #56697d; }
+</style>
+<main>
+  <h1>BTR 버튼 매크로 연습</h1>
+  <p class="notice"><strong>개발용 가상자료입니다.</strong> 로그인·실제 조회·발급·결제·파일 다운로드를 하지 않습니다. 네트워크 요청이나 외부 전송이 없는 연습 화면입니다.</p>
+  <p>이 창을 같은 크기로 유지하고 BTR의 <strong>브라우저 버튼 매크로</strong>에서 아래 버튼 위치를 하나씩 등록하세요. 등록 후 이 페이지를 새로고침해 횟수를 0으로 되돌리고 매크로를 실행합니다.</p>
+  <div class="buttons">
+    <section><button type="button" data-action="조회">1. 조회 연습</button><div class="count">클릭 <output id="count-0">0</output>회</div></section>
+    <section><button type="button" data-action="영수증">2. 영수증 연습</button><div class="count">클릭 <output id="count-1">0</output>회</div></section>
+    <section><button type="button" data-action="확인">3. 확인 연습</button><div class="count">클릭 <output id="count-2">0</output>회</div></section>
+  </div>
+  <p id="status" role="status" aria-live="polite">아직 누른 버튼이 없습니다.</p>
+  <p><small>각 버튼의 숫자가 1회씩 증가하면 순차 클릭을 확인할 수 있습니다. 이 결과는 실제 사이트의 조회·영수증 발급 성공을 뜻하지 않습니다. Esc 또는 주 모니터의 왼쪽 위 모서리로 포인터를 이동해 매크로를 멈출 수 있습니다.</small></p>
+</main>
+<script>
+  (function () {
+    var counts = [0, 0, 0];
+    var buttons = document.querySelectorAll('button[data-action]');
+    for (var index = 0; index < buttons.length; index += 1) {
+      (function (button, number) {
+        button.onclick = function () {
+          counts[number] += 1;
+          document.getElementById('count-' + number).textContent = counts[number];
+          document.getElementById('status').textContent = '마지막 동작: ' + button.getAttribute('data-action') + ' 연습 · 전체 클릭 ' + counts.join(' / ') + '회';
+        };
+      })(buttons[index], index);
+    }
+  })();
+</script>
+</html>
