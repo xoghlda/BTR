@@ -2,6 +2,14 @@
 chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
+if exist "%~dp0dist\출장증빙캡처_v1.4.1.exe" (
+    start "" "%~dp0dist\출장증빙캡처_v1.4.1.exe"
+    exit /b 0
+)
+if exist "%~dp0releases\v1.4.1\windows-x64\BTR.exe" (
+    start "" "%~dp0releases\v1.4.1\windows-x64\BTR.exe"
+    exit /b 0
+)
 if exist "%~dp0dist\출장증빙캡처_v1.4.0.exe" (
     start "" "%~dp0dist\출장증빙캡처_v1.4.0.exe"
     exit /b 0

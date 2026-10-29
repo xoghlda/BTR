@@ -26,6 +26,8 @@ class _FixtureAdapter:
         self.pointer = (150, 180)
         self.clock = 0.0
         self.sent: list[tuple[int, int]] = []
+        self.prepared_modes: list[str] = []
+        self.resize_during_countdown = False
 
     def list_windows(self):
         return [self.window]
@@ -36,6 +38,12 @@ class _FixtureAdapter:
         return self.identity
 
     def snapshot(self, identity):
+        return self.state
+
+    def prepare_window(self, identity, mode, expected_geometry=None, *, stopped=None):
+        self.prepared_modes.append(mode)
+        target = self.geometry if mode == "maximize" else (expected_geometry or self.state.geometry)
+        self.state = replace(self.state, geometry=target, minimized=False, visible=True)
         return self.state
 
     def cursor_position(self):
@@ -55,6 +63,8 @@ class _FixtureAdapter:
 
     def wait(self, seconds: float, stopped: threading.Event):
         self.clock += seconds
+        if self.resize_during_countdown:
+            self.state = replace(self.state, geometry=Geometry(900, 600, 96))
 
 
 def _job_events(events: queue.Queue, job_id: str) -> list[dict]:
@@ -95,12 +105,13 @@ def run_macro_selfcheck(output_dir: Path) -> dict:
         checks["four_second_countdown"] = [event["remaining"] for event in recorded_events if event["type"] == "countdown"] == [4, 3, 2, 1] and adapter.clock >= 4
         profile = MacroProfile(record["browser"], record["geometry"], (
             record["step"], ClickStep("개발용 클릭 2", 90, 120, 250), ClickStep("개발용 클릭 3", 130, 160, 250),
-        ))
+        ), record["window_mode"])
+        checks["default_maximize_prepared"] = record["window_mode"] == "maximize" and adapter.prepared_modes == ["maximize"]
         profile_path = output / "macro_profile.json"
         save_profile(profile_path, profile)
         loaded = load_profile(profile_path)
         checks["profile_roundtrip"] = loaded == profile
-        checks["profile_safe_schema"] = set(json.loads(profile_path.read_text(encoding="utf-8"))) == {"version", "browser", "geometry", "steps"}
+        checks["profile_safe_schema"] = set(json.loads(profile_path.read_text(encoding="utf-8"))) == {"version", "browser", "geometry", "steps", "window_mode"}
         playback_events = _job_events(events, engine.play(adapter.window, loaded))
         checks["three_clicks_completed"] = any(event["type"] == "done" and event["count"] == 3 for event in playback_events)
         checks["moved_window_coordinates"] = adapter.sent == [(150, 180), (440, 340), (480, 380)]
@@ -108,9 +119,19 @@ def run_macro_selfcheck(output_dir: Path) -> dict:
         adapter.state = replace(adapter.state, foreground=False)
         focus_events = _job_events(events, engine.play(adapter.window, loaded))
         checks["focus_guard_no_extra_clicks"] = any(event["type"] == "error" for event in focus_events) and len(adapter.sent) == count
-        adapter.state = replace(adapter.state, foreground=True, geometry=Geometry(900, 600, 96))
+        adapter.state = replace(adapter.state, foreground=True)
+        adapter.resize_during_countdown = True
         resize_events = _job_events(events, engine.play(adapter.window, loaded))
         checks["resize_guard_no_extra_clicks"] = any(event["type"] == "error" for event in resize_events) and len(adapter.sent) == count
+        adapter.resize_during_countdown = False
+        old = profile.to_dict()
+        old["version"] = 1
+        old.pop("window_mode")
+        legacy = MacroProfile.from_dict(old)
+        legacy_events = _job_events(events, engine.record_point(adapter.window, "기존 기록 크기", 250, legacy))
+        checks["legacy_recorded_fit_prepared"] = (legacy.window_mode == "recorded" and adapter.prepared_modes[-1] == "recorded"
+            and any(event["type"] == "recorded" and event["window_mode"] == "recorded" for event in legacy_events)
+            and len(adapter.sent) == count)
         checks["worker_idle"] = not engine.is_busy()
         _require(all(checks.values()), "A macro fixture check did not pass")
         result.update(ok=True, recorded_points=1, fake_clicks_sent=count, profile_file=profile_path.name)

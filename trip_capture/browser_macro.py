@@ -30,6 +30,7 @@ MAX_STEP_WAIT_MS = 30_000
 COUNTDOWN_SECONDS = 4
 MAX_RUNTIME_SECONDS = 330
 POLL_SECONDS = 0.05
+WINDOW_MODES = ("maximize", "recorded")
 BROWSERS = {"chrome.exe": "Chrome", "msedge.exe": "Edge", "iexplore.exe": "Internet Explorer"}
 
 
@@ -65,6 +66,12 @@ def _browser(value: str) -> str:
     return value
 
 
+def _window_mode(value: str) -> str:
+    if not isinstance(value, str) or value not in WINDOW_MODES:
+        raise MacroError("창 준비 방식은 최대화 또는 기록한 크기만 사용할 수 있습니다.")
+    return value
+
+
 @dataclass(frozen=True)
 class Geometry:
     width: int
@@ -96,9 +103,11 @@ class MacroProfile:
     browser: str
     geometry: Geometry
     steps: tuple[ClickStep, ...]
+    window_mode: str = "maximize"
 
     def __post_init__(self):
         _browser(self.browser)
+        _window_mode(self.window_mode)
         if not isinstance(self.geometry, Geometry) or type(self.steps) is not tuple:
             raise MacroError("매크로 창 정보 또는 클릭 목록 형식이 올바르지 않습니다.")
         if len(self.steps) > MAX_STEPS or not all(isinstance(step, ClickStep) for step in self.steps):
@@ -110,16 +119,19 @@ class MacroProfile:
 
     def to_dict(self) -> dict:
         return {
-            "version": 1, "browser": self.browser,
+            "version": 2, "browser": self.browser, "window_mode": self.window_mode,
             "geometry": {"width": self.geometry.width, "height": self.geometry.height, "dpi": self.geometry.dpi},
             "steps": [{"name": step.name, "x": step.x, "y": step.y, "wait_ms": step.wait_ms} for step in self.steps],
         }
 
     @classmethod
     def from_dict(cls, value: dict) -> "MacroProfile":
-        _keys(value, {"version", "browser", "geometry", "steps"}, "매크로 파일")
-        if type(value["version"]) is not int or value["version"] != 1:
+        if type(value) is not dict or type(value.get("version")) is not int or value["version"] not in (1, 2):
             raise MacroError("지원하지 않는 매크로 파일 버전입니다.")
+        expected = {"version", "browser", "geometry", "steps"}
+        if value["version"] == 2:
+            expected.add("window_mode")
+        _keys(value, expected, "매크로 파일")
         geometry = value["geometry"]
         _keys(geometry, {"width", "height", "dpi"}, "창 정보")
         steps = value["steps"]
@@ -127,7 +139,8 @@ class MacroProfile:
             raise MacroError(f"클릭 목록은 최대 {MAX_STEPS}개인 배열이어야 합니다.")
         for step in steps:
             _keys(step, {"name", "x", "y", "wait_ms"}, "클릭 지점")
-        return cls(value["browser"], Geometry(**geometry), tuple(ClickStep(**step) for step in steps))
+        return cls(value["browser"], Geometry(**geometry), tuple(ClickStep(**step) for step in steps),
+                   value["window_mode"] if value["version"] == 2 else "recorded")
 
 
 def _unique_object(pairs):
@@ -198,6 +211,8 @@ class WindowSnapshot:
 class MacroAdapter(Protocol):
     def list_windows(self) -> list[NativeBrowserWindow]: ...
     def bind(self, window: NativeBrowserWindow) -> WindowIdentity: ...
+    def prepare_window(self, identity: WindowIdentity, mode: str, expected_geometry: Geometry | None = None,
+                       *, stopped: threading.Event | None = None) -> WindowSnapshot: ...
     def snapshot(self, identity: WindowIdentity) -> WindowSnapshot: ...
     def cursor_position(self) -> tuple[int, int]: ...
     def escape_pressed(self) -> bool: ...
@@ -206,12 +221,12 @@ class MacroAdapter(Protocol):
     def wait(self, seconds: float, stopped: threading.Event) -> None: ...
 
 
-def _validate_snapshot(snapshot: WindowSnapshot, identity: WindowIdentity, geometry: Geometry | None):
+def _validate_snapshot(snapshot: WindowSnapshot, identity: WindowIdentity, geometry: Geometry | None, *, require_foreground: bool = True):
     if snapshot.identity != identity:
         raise MacroError("선택한 창의 프로세스가 변경됐습니다. 창을 다시 선택해 주세요.")
     if not snapshot.visible or snapshot.minimized:
         raise MacroError("선택한 창이 숨겨졌거나 최소화됐습니다. 창을 표시한 뒤 다시 시도하세요.")
-    if not snapshot.foreground:
+    if require_foreground and not snapshot.foreground:
         raise MacroError("선택한 브라우저가 맨 앞에 없습니다. 해당 창을 클릭한 뒤 다시 시도하세요.")
     if geometry is not None and snapshot.geometry != geometry:
         raise MacroError("기록할 때와 창 크기 또는 화면 배율이 다릅니다. 크기·배율을 맞추거나 다시 기록해 주세요.")
@@ -231,6 +246,11 @@ class _Input(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("value", _InputUnion)]
 
 
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+
 class Win32Adapter:
     """Lazy Win32 access; construction and imports do not enumerate or send input."""
 
@@ -244,12 +264,27 @@ class Win32Adapter:
                 raise MacroError("브라우저 클릭 매크로는 Windows에서 사용할 수 있습니다.")
             user = ctypes.WinDLL("user32", use_last_error=True)
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-            for name in ("IsWindow", "IsWindowVisible", "IsIconic"):
+            for name in ("IsWindow", "IsWindowVisible", "IsIconic", "IsZoomed"):
                 getattr(user, name).argtypes = [wintypes.HWND]
                 getattr(user, name).restype = wintypes.BOOL
             user.GetForegroundWindow.restype = wintypes.HWND
             user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
             user.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            user.ShowWindow.restype = wintypes.BOOL
+            if hasattr(user, "ShowWindowAsync"):
+                user.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
+                user.ShowWindowAsync.restype = wintypes.BOOL
+            user.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user.SetForegroundWindow.restype = wintypes.BOOL
+            user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                          ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            user.SetWindowPos.restype = wintypes.BOOL
+            user.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            user.MonitorFromWindow.restype = wintypes.HANDLE
+            user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MonitorInfo)]
+            user.GetMonitorInfoW.restype = wintypes.BOOL
             user.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
             user.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
             user.WindowFromPoint.argtypes = [wintypes.POINT]
@@ -336,6 +371,128 @@ class Win32Adapter:
             geometry = Geometry(rectangle.right - rectangle.left, rectangle.bottom - rectangle.top, int(getter(identity.hwnd)))
             return WindowSnapshot(actual, geometry, origin.x, origin.y, bool(user.IsWindowVisible(identity.hwnd)),
                                   bool(user.IsIconic(identity.hwnd)), user.GetForegroundWindow() == identity.hwnd)
+
+    def _prepare_guard(self, identity: WindowIdentity, stopped: threading.Event, deadline: float):
+        if stopped.is_set():
+            raise _Stopped("사용자가 창 준비를 중지했습니다.")
+        if self.escape_pressed():
+            raise _Stopped("Esc 키로 창 준비를 중지했습니다.")
+        x, y = self.cursor_position()
+        if 0 <= x <= 3 and 0 <= y <= 3:
+            raise _Stopped("마우스를 주 모니터 왼쪽 위로 이동해 창 준비를 중지했습니다.")
+        if self.monotonic() >= deadline:
+            raise MacroError("창 크기가 제한 시간 안에 안정되지 않았습니다. 브라우저 응답을 확인하고 다시 시도하세요.")
+        if self._identity(identity.hwnd) != identity:
+            raise MacroError("선택한 창의 프로세스가 변경됐습니다. 창을 다시 선택해 주세요.")
+
+    def _stable_window(self, identity: WindowIdentity, stopped: threading.Event, deadline: float,
+                       zoomed: bool | None = None, expected_geometry: Geometry | None = None,
+                       within_work: tuple[int, int, int, int] | None = None) -> WindowSnapshot:
+        previous = None
+        repeats = 0
+        user, _ = self._apis()
+        while True:
+            self._prepare_guard(identity, stopped, deadline)
+            if user.IsIconic(identity.hwnd) or not user.IsWindowVisible(identity.hwnd):
+                previous = None
+                repeats = 0
+                self.wait(POLL_SECONDS, stopped)
+                continue
+            snapshot = self.snapshot(identity)
+            _validate_snapshot(snapshot, identity, None, require_foreground=False)
+            current_zoomed = bool(user.IsZoomed(identity.hwnd))
+            shape = (snapshot.geometry, snapshot.left, snapshot.top, current_zoomed)
+            repeats = repeats + 1 if shape == previous else 1
+            previous = shape
+            if (repeats >= 3 and (zoomed is None or current_zoomed == zoomed)
+                    and (expected_geometry is None or snapshot.geometry == expected_geometry)
+                    and (within_work is None or self._inside_work(snapshot, within_work))):
+                return snapshot
+            self.wait(POLL_SECONDS, stopped)
+
+    def _work_area(self, identity: WindowIdentity) -> tuple[int, int, int, int]:
+        user, _ = self._apis()
+        info = _MonitorInfo()
+        info.cbSize = ctypes.sizeof(_MonitorInfo)
+        monitor = user.MonitorFromWindow(identity.hwnd, 2)
+        if not monitor or not user.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            raise MacroError("선택한 창이 있는 모니터의 작업 영역을 확인하지 못했습니다.")
+        bounds = (info.rcWork.left, info.rcWork.top, info.rcWork.right, info.rcWork.bottom)
+        if not (0 < bounds[2] - bounds[0] <= 32768 and 0 < bounds[3] - bounds[1] <= 32768):
+            raise MacroError("모니터 작업 영역 크기가 올바르지 않습니다.")
+        return bounds
+
+    @staticmethod
+    def _inside_work(snapshot: WindowSnapshot, bounds: tuple[int, int, int, int]) -> bool:
+        return (snapshot.left >= bounds[0] and snapshot.top >= bounds[1]
+                and snapshot.left + snapshot.geometry.width <= bounds[2]
+                and snapshot.top + snapshot.geometry.height <= bounds[3])
+
+    def prepare_window(self, identity: WindowIdentity, mode: str, expected_geometry: Geometry | None = None,
+                       *, stopped: threading.Event | None = None) -> WindowSnapshot:
+        """Normalize only the selected window; retain exact client pixels/DPI."""
+        mode = _window_mode(mode)
+        if expected_geometry is not None and not isinstance(expected_geometry, Geometry):
+            raise MacroError("기록한 창 크기 정보가 올바르지 않습니다.")
+        stopped = stopped if stopped is not None else threading.Event()
+        deadline = self.monotonic() + 3.0
+        with self._physical_pixels() as user:
+            show = getattr(user, "ShowWindowAsync", None) or user.ShowWindow
+            def change_visibility(command: int):
+                self._prepare_guard(identity, stopped, deadline)
+                show(identity.hwnd, command)  # Zero is not interpreted as failure; verify snapshots.
+            def maximize():
+                work = self._work_area(identity)
+                change_visibility(3)
+                return self._stable_window(identity, stopped, deadline, zoomed=True,
+                                           expected_geometry=expected_geometry, within_work=work)
+            self._prepare_guard(identity, stopped, deadline)
+            if user.IsIconic(identity.hwnd):
+                change_visibility(9)
+            if mode == "maximize":
+                snapshot = maximize()
+            else:
+                snapshot = self._stable_window(identity, stopped, deadline)
+                if expected_geometry is not None:
+                    if snapshot.geometry.dpi != expected_geometry.dpi:
+                        raise MacroError("기록한 모니터와 화면 배율이 다릅니다. 같은 배율의 모니터에서 다시 시도하세요.")
+                    work = self._work_area(identity)
+                    if snapshot.geometry != expected_geometry or not self._inside_work(snapshot, work):
+                        if user.IsZoomed(identity.hwnd):
+                            change_visibility(9)
+                            snapshot = self._stable_window(identity, stopped, deadline, zoomed=False)
+                        for _ in range(3):
+                            if snapshot.geometry.dpi != expected_geometry.dpi:
+                                raise MacroError("창을 준비하는 동안 화면 배율이 변경됐습니다.")
+                            rectangle = wintypes.RECT()
+                            self._prepare_guard(identity, stopped, deadline)
+                            if not user.GetWindowRect(identity.hwnd, ctypes.byref(rectangle)):
+                                raise MacroError("선택한 창의 외곽 크기를 확인하지 못했습니다.")
+                            frame_width = rectangle.right - rectangle.left - snapshot.geometry.width
+                            frame_height = rectangle.bottom - rectangle.top - snapshot.geometry.height
+                            if frame_width < 0 or frame_height < 0:
+                                raise MacroError("창의 실제 픽셀 경계를 확인하지 못했습니다.")
+                            width, height = expected_geometry.width + frame_width, expected_geometry.height + frame_height
+                            if width > work[2] - work[0] or height > work[3] - work[1]:
+                                snapshot = maximize()  # Old maximized v1 recordings can fit only this exact shape.
+                                break
+                            left = min(max(rectangle.left, work[0]), work[2] - width)
+                            top = min(max(rectangle.top, work[1]), work[3] - height)
+                            self._prepare_guard(identity, stopped, deadline)
+                            flags = 0x0004 | 0x0010 | 0x0200 | 0x4000  # NOZORDER/NOACTIVATE/NOOWNERZORDER/ASYNC
+                            if not user.SetWindowPos(identity.hwnd, None, left, top, width, height, flags):
+                                raise MacroError("기록한 크기로 창을 맞추지 못했습니다.")
+                            snapshot = self._stable_window(identity, stopped, deadline, zoomed=False,
+                                                           expected_geometry=expected_geometry, within_work=work)
+                            if snapshot.geometry == expected_geometry:
+                                break
+            _validate_snapshot(snapshot, identity, expected_geometry, require_foreground=False)
+            self._prepare_guard(identity, stopped, deadline)
+            if not self._inside_work(snapshot, self._work_area(identity)):
+                raise MacroError("선택한 창을 현재 모니터의 작업 영역 안에 맞추지 못했습니다.")
+            self._prepare_guard(identity, stopped, deadline)
+            user.SetForegroundWindow(identity.hwnd)  # OS denial is normal; user has the following countdown.
+            return snapshot
 
     def cursor_position(self) -> tuple[int, int]:
         with self._physical_pixels() as user:
@@ -465,26 +622,35 @@ class BrowserMacro:
             self._emit(job_id, "countdown", mode=mode, remaining=remaining)
             self._pause(1.0, stopped, deadline)
 
-    def record_point(self, window: NativeBrowserWindow, name: str, wait_ms: int, profile: MacroProfile | None = None) -> str:
+    def record_point(self, window: NativeBrowserWindow, name: str, wait_ms: int, profile: MacroProfile | None = None,
+                     *, window_mode: str | None = None) -> str:
         label = _name(name)
         wait_ms = _integer(wait_ms, MIN_STEP_WAIT_MS, MAX_STEP_WAIT_MS, "클릭 후 대기 시간")
         browser = _browser(window.browser)
+        if profile is not None and not isinstance(profile, MacroProfile):
+            raise MacroError("기존 매크로 정보가 올바르지 않습니다.")
+        mode = _window_mode(window_mode if window_mode is not None else (profile.window_mode if profile else "maximize"))
         if profile is not None:
             if not isinstance(profile, MacroProfile) or profile.browser != browser:
                 raise MacroError("같은 브라우저 종류의 매크로에만 클릭을 추가할 수 있습니다.")
+            if mode != profile.window_mode:
+                raise MacroError("기록된 지점의 창 준비 방식은 바꿀 수 없습니다. 새 매크로로 기록해 주세요.")
             if len(profile.steps) >= MAX_STEPS or sum(step.wait_ms for step in profile.steps) + wait_ms > MAX_TOTAL_WAIT_MS:
                 raise MacroError("클릭 30개·전체 대기 300초 제한을 초과합니다.")
         def record(job_id, stopped):
             identity = self.adapter.bind(window)
             deadline = self.adapter.monotonic() + 15
+            self._emit(job_id, "preparing", window_mode=mode)
+            prepared = self.adapter.prepare_window(identity, mode, profile.geometry if profile else None, stopped=stopped)
+            _validate_snapshot(prepared, identity, profile.geometry if profile else None, require_foreground=False)
             self._countdown(job_id, "recording", stopped, deadline)
             snapshot = self.adapter.snapshot(identity)
-            _validate_snapshot(snapshot, identity, profile.geometry if profile else None)
+            _validate_snapshot(snapshot, identity, prepared.geometry)
             x, y = self.adapter.cursor_position()
             step = ClickStep(label, x - snapshot.left, y - snapshot.top, wait_ms)
-            MacroProfile(browser, snapshot.geometry, (step,))  # Check point is inside the client.
+            MacroProfile(browser, snapshot.geometry, (step,), mode)  # Check point is inside the client.
             self._check_stop(stopped, deadline)
-            self._emit(job_id, "recorded", step=step, geometry=snapshot.geometry, browser=browser)
+            self._emit(job_id, "recorded", step=step, geometry=snapshot.geometry, browser=browser, window_mode=mode)
         return self._start(record)
 
     def play(self, window: NativeBrowserWindow, profile: MacroProfile) -> str:
@@ -495,6 +661,9 @@ class BrowserMacro:
         def playback(job_id, stopped):
             identity = self.adapter.bind(window)
             deadline = self.adapter.monotonic() + MAX_RUNTIME_SECONDS
+            self._emit(job_id, "preparing", window_mode=profile.window_mode)
+            prepared = self.adapter.prepare_window(identity, profile.window_mode, profile.geometry, stopped=stopped)
+            _validate_snapshot(prepared, identity, profile.geometry, require_foreground=False)
             self._countdown(job_id, "playing", stopped, deadline)
             count = 0
             for index, step in enumerate(profile.steps, 1):

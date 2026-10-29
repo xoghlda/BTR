@@ -32,6 +32,8 @@ class BrowserMacroDialog(tk.Toplevel):
         self._terminal_handled = False
         self._poll_after_id: str | None = None
         self.selection = tk.StringVar()
+        self.maximize_window = tk.BooleanVar(value=True)
+        self._recording_window_mode = "maximize"
         self.step_name = tk.StringVar(value="조회 버튼")
         self.wait_seconds = tk.StringVar(value="1.0")
         self.message = tk.StringVar(value="로그인한 브라우저 창을 선택하고 버튼 위치를 한 단계씩 등록하세요.")
@@ -54,7 +56,7 @@ class BrowserMacroDialog(tk.Toplevel):
         intro = ttk.Frame(body)
         intro.grid(row=0, column=0, sticky="ew")
         ttk.Label(intro, text="로그인한 브라우저의 조회·출력 버튼을 순서대로 클릭", font=("맑은 고딕", 13, "bold")).pack(anchor="w")
-        ttk.Label(intro, text="로그인·인증은 먼저 직접 완료하세요. 같은 창 크기·배율·스크롤·화면 배치가 필요합니다.\n"
+        ttk.Label(intro, text="로그인·인증은 먼저 직접 완료하세요. 페이지 확대율·스크롤·화면 배치는 직접 유지하세요.\n"
                   "클릭만 수행하며 조회 성공이나 영수증 저장 여부는 직접 확인해야 합니다.", wraplength=740).pack(anchor="w", pady=(6, 9))
         windows = ttk.Frame(body)
         windows.grid(row=1, column=0, sticky="ew", pady=(0, 10))
@@ -65,6 +67,11 @@ class BrowserMacroDialog(tk.Toplevel):
         self.window_combo.bind("<<ComboboxSelected>>", lambda _event: self._window_changed())
         self.refresh_button = ttk.Button(windows, text="창 새로고침", command=self._refresh_windows)
         self.refresh_button.grid(row=1, column=1, pady=(4, 0))
+        self.maximize_check = ttk.Checkbutton(windows, text="기록·실행 전에 선택한 창 자동 최대화", variable=self.maximize_window,
+                                             command=self._window_mode_changed)
+        self.maximize_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(windows, text="해제: 기록한 창 크기로 자동 맞춤 · 위치 등록 후 설정 잠금 · 변경하려면 ‘새 매크로’", wraplength=735).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
         editor = ttk.Frame(body)
         editor.grid(row=2, column=0, sticky="ew", pady=(0, 9))
         editor.columnconfigure(1, weight=1)
@@ -102,7 +109,8 @@ class BrowserMacroDialog(tk.Toplevel):
         status = ttk.Frame(body)
         status.grid(row=4, column=0, sticky="ew", pady=(9, 8))
         ttk.Label(status, textvariable=self.message, wraplength=735).pack(anchor="w")
-        ttk.Label(status, text="위치 추가는 클릭 녹화가 아닙니다. 4초 안에 선택 창을 클릭하고 대상 버튼 위에 포인터를 두세요.\n"
+        ttk.Label(status, text="창 준비 후 4초 동안 대상 버튼 위에 포인터를 두세요. 위치 등록은 클릭 녹화가 아닙니다.\n"
+                  "창이 앞에 오지 않으면 4초 안에 직접 선택하세요. 실패하면 창을 클릭한 뒤 재시도하세요.\n"
                   "실행 중 Esc 또는 주 모니터 왼쪽 위로 포인터를 이동하면 중지합니다.", wraplength=735).pack(anchor="w", pady=(5, 0))
         footer = ttk.Frame(body)
         footer.grid(row=5, column=0, sticky="ew")
@@ -150,6 +158,17 @@ class BrowserMacroDialog(tk.Toplevel):
             self.message.set(f"이 매크로는 {self.profile.browser}용입니다. 같은 브라우저 창을 선택하거나 ‘새 매크로’를 누르세요.")
         self._sync_controls()
 
+    def _window_mode_changed(self) -> None:
+        if self._busy or self._closed or (self.profile is not None and self.profile.steps):
+            self._sync_controls()
+            return
+        # There are no coordinates to preserve. A changed mode starts a clean
+        # geometry instead of reusing dimensions from an empty imported file.
+        self.profile = None
+        mode = "자동 최대화" if self.maximize_window.get() else "현재 크기로 첫 위치 등록 · 재생 시 기록한 창 크기로 자동 맞춤"
+        self.message.set(mode + "을 사용합니다. 페이지 확대율·스크롤 위치는 직접 유지하세요.")
+        self._render_steps()
+
     def _selected_index(self) -> int | None:
         selection = self.tree.selection()
         return int(selection[0]) if selection else None
@@ -161,10 +180,13 @@ class BrowserMacroDialog(tk.Toplevel):
         window = self._windows.get(self.selection.get())
         matching = window is not None and (self.profile is None or window.browser == self.profile.browser)
         steps = self.profile.steps if self.profile else ()
+        if self.profile is not None:
+            self.maximize_window.set(self.profile.window_mode == "maximize")
         index = self._selected_index()
         for widget in (self.name_entry, self.wait_spin, self.refresh_button, self.new_button, self.import_button):
             widget.state(["!disabled"] if idle else ["disabled"])
         self.window_combo.state(["!disabled", "readonly"] if idle else ["disabled"])
+        self.maximize_check.state(["!disabled"] if idle and not steps else ["disabled"])
         self.tree.state(["!disabled"] if idle else ["disabled"])
         self.record_button.state(["!disabled"] if idle and matching else ["disabled"])
         self.play_button.state(["!disabled"] if idle and matching and steps else ["disabled"])
@@ -228,8 +250,9 @@ class BrowserMacroDialog(tk.Toplevel):
         except ValueError as error:
             self.message.set(str(error))
             return
-        self.message.set("4초 안에 선택 창을 클릭하고 대상 버튼 위에 포인터를 두세요.")
-        self._begin(lambda: self.core.record_point(window, name, wait_ms, profile=self.profile))
+        self._recording_window_mode = self.profile.window_mode if self.profile is not None else ("maximize" if self.maximize_window.get() else "recorded")
+        self.message.set("선택한 창의 크기와 전면 배치를 준비합니다. 준비 후 4초 동안 대상 버튼 위에 포인터를 두세요.")
+        self._begin(lambda: self.core.record_point(window, name, wait_ms, profile=self.profile, window_mode=self._recording_window_mode))
 
     def _play(self) -> None:
         if self._busy or self._closed:
@@ -238,7 +261,7 @@ class BrowserMacroDialog(tk.Toplevel):
         if window is None or self.profile is None or not self.profile.steps:
             self.message.set("브라우저 창과 등록된 단계를 확인해 주세요.")
             return
-        self.message.set("4초 안에 선택한 브라우저 창을 직접 클릭하세요. Esc로 중지할 수 있습니다.")
+        self.message.set("선택한 창의 크기와 전면 배치를 준비한 뒤 4초 후 클릭합니다. Esc로 중지할 수 있습니다.")
         self._begin(lambda: self.core.play(window, self.profile))
 
     def _render_steps(self, selected: int | None = None) -> None:
@@ -262,7 +285,7 @@ class BrowserMacroDialog(tk.Toplevel):
 
     def _replace_steps(self, steps: tuple[ClickStep, ...], selected: int | None = None) -> None:
         if self.profile is not None:
-            self.profile = MacroProfile(self.profile.browser, self.profile.geometry, steps)
+            self.profile = MacroProfile(self.profile.browser, self.profile.geometry, steps, window_mode=self.profile.window_mode)
         self._render_steps(selected)
 
     def _update_step(self) -> None:
@@ -301,6 +324,7 @@ class BrowserMacroDialog(tk.Toplevel):
         if self._busy or self._closed:
             return
         self.profile = None
+        self.maximize_window.set(True)
         self.message.set("새 매크로입니다. 브라우저 창을 선택하고 위치를 등록하세요.")
         self._render_steps()
 
@@ -313,7 +337,8 @@ class BrowserMacroDialog(tk.Toplevel):
         try:
             self.profile = load_profile(Path(path))
             self._render_steps()
-            self.message.set(f"{len(self.profile.steps)}개 단계를 가져왔습니다. {self.profile.browser} 창을 직접 선택하고 위치를 확인한 뒤 실행하세요.")
+            mode = "자동 최대화" if self.profile.window_mode == "maximize" else "기록한 창 크기로 자동 맞춤"
+            self.message.set(f"{len(self.profile.steps)}개 단계 · {mode}. {self.profile.browser} 창을 선택하고 배율·스크롤 위치를 확인한 뒤 실행하세요.")
         except Exception as error:
             messagebox.showerror("매크로 가져오기", str(error), parent=self)
 
@@ -354,9 +379,12 @@ class BrowserMacroDialog(tk.Toplevel):
         if self._closed or self._job_id is None or event.get("job_id") != self._job_id:
             return
         kind = event.get("type")
-        if kind == "countdown":
+        if kind == "preparing":
+            self.message.set(str(event.get("message", "선택한 창의 크기와 전면 배치를 준비하고 있습니다.")))
+        elif kind == "countdown":
             action = "위치 등록" if event.get("mode") == "recording" else "실행"
-            self.message.set(f"{action}까지 {event.get('remaining', '')}초 · 선택한 브라우저를 직접 클릭하세요.")
+            hint = "대상 버튼 위에 포인터를 두세요." if event.get("mode") == "recording" else "Esc로 중지할 수 있습니다."
+            self.message.set(f"창 크기 조정 후 {action}까지 {event.get('remaining', '')}초 · {hint} 창이 뒤에 있으면 직접 선택하세요.")
         elif kind == "progress":
             self.message.set(f"{event.get('index', '')}/{event.get('total', '')} · {event.get('name', '')} 클릭 중")
         elif kind in ("recorded", "done", "stopped", "error") and not self._terminal_handled:
@@ -364,7 +392,10 @@ class BrowserMacroDialog(tk.Toplevel):
             if kind == "recorded":
                 try:
                     steps = self.profile.steps if self.profile else ()
-                    profile = MacroProfile(event["browser"], event["geometry"], steps + (event["step"],))
+                    mode = event.get("window_mode", self._recording_window_mode)
+                    if self.profile is not None and steps and mode != self.profile.window_mode:
+                        raise ValueError("기존 위치의 창 설정이 바뀌었습니다.")
+                    profile = MacroProfile(event["browser"], event["geometry"], steps + (event["step"],), window_mode=mode)
                 except (KeyError, TypeError, ValueError, AttributeError) as error:
                     self.message.set(f"포인터 위치를 등록하지 못했습니다({type(error).__name__}). 기존 단계는 유지했습니다. 작업 종료 후 다시 등록해 주세요.")
                 else:

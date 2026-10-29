@@ -416,7 +416,7 @@ class GuiTests(unittest.TestCase):
         self.assertIn("누락", self.app.manual_instruction.get())
 
     def test_step_shows_current_and_next_site_without_extra_rows(self):
-        self.assertIn("v1.4.0", self.root.title())
+        self.assertIn("v1.4.1", self.root.title())
         self.app._handle_event({"type": "step", "site": "naver", "index": 1, "total": 3, "next_site": "opinet", "sites": ["naver", "opinet", "hipass"]})
         self.app._handle_event({"type": "manual", "site": "naver", "message": "경로 준비"})
         title = self.app.progress_frame.cget("text")

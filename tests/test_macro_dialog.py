@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tkinter as tk
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -33,6 +34,10 @@ class MacroDialogTests(unittest.TestCase):
         except tk.TclError as error:
             self.skipTest(str(error))
         self.root.withdraw()
+        # The real parent configures larger Korean fonts; exercise that layout
+        # without constructing its worker or credential store.
+        from trip_capture.gui import TripCaptureApp
+        TripCaptureApp._build_styles(SimpleNamespace(root=self.root))
         self.dialog = macro_dialog.BrowserMacroDialog(self.root, self.busy_callback, self.close_callback)
         self.dialog.withdraw()
         self.root.update_idletasks()
@@ -50,10 +55,10 @@ class MacroDialogTests(unittest.TestCase):
         self.dialog.selection.set(next(iter(self.dialog._windows)))
         self.dialog._window_changed()
 
-    def profile(self):
+    def profile(self, window_mode="maximize"):
         return MacroProfile("Chrome", Geometry(1200, 800, 96), (
             ClickStep("조회", 100, 150, 1000), ClickStep("영수증", 240, 300, 2000),
-        ))
+        ), window_mode=window_mode)
 
     def event(self, kind, *, job_id="record-job", **values):
         self.dialog._handle_event({"type": kind, "job_id": job_id, **values})
@@ -77,12 +82,13 @@ class MacroDialogTests(unittest.TestCase):
         dialog.step_name.set("조회 버튼")
         dialog.wait_seconds.set("1.5")
 
-        def start(window, name, wait_ms, *, profile):
+        def start(window, name, wait_ms, *, profile, window_mode):
             self.busy_callback.assert_called_once_with(True)
             self.assertEqual(dialog.state(), "withdrawn")
             self.assertTrue(dialog.is_busy())
             self.assertIs(window, self.window)
             self.assertEqual((name, wait_ms, profile), ("조회 버튼", 1500, None))
+            self.assertEqual(window_mode, "maximize")
             return "record-job"
 
         self.core.record_point.side_effect = start
@@ -153,11 +159,110 @@ class MacroDialogTests(unittest.TestCase):
         dialog.wait_seconds.set("0.2")
         dialog._update_step()
         self.assertEqual(dialog.profile.steps[0], ClickStep("수정된 조회", 100, 150, 200))
+        self.assertEqual(dialog.profile.window_mode, "maximize")
         dialog._move_step(1)
         self.assertEqual(dialog.profile.steps[1].name, "수정된 조회")
+        self.assertEqual(dialog.profile.window_mode, "maximize")
         dialog._remove_step()
         self.assertEqual([step.name for step in dialog.profile.steps], ["영수증"])
+        self.assertEqual(dialog.profile.window_mode, "maximize")
         self.core.play.assert_not_called()
+
+    def test_new_profile_defaults_to_maximize_and_busy_locks_the_option(self):
+        dialog = self.dialog
+        self.assertTrue(dialog.maximize_window.get())
+        self.assertFalse(dialog.maximize_check.instate(["disabled"]))
+        self.select_window()
+        dialog._record()
+        self.assertEqual(self.core.record_point.call_args.kwargs["window_mode"], "maximize")
+        self.assertTrue(dialog.maximize_check.instate(["disabled"]))
+
+    def test_editing_legacy_recorded_steps_preserves_their_window_mode(self):
+        dialog = self.dialog
+        dialog.profile = self.profile("recorded")
+        dialog._render_steps(0)
+        dialog.step_name.set("이전 위치")
+        dialog.wait_seconds.set("1.4")
+        dialog._update_step()
+        self.assertEqual(dialog.profile.window_mode, "recorded")
+        dialog._move_step(1)
+        self.assertEqual(dialog.profile.window_mode, "recorded")
+        dialog._remove_step()
+        self.assertEqual(dialog.profile.window_mode, "recorded")
+        self.assertFalse(dialog.maximize_window.get())
+
+    def test_unchecked_first_record_preserves_recorded_mode_and_locks_coordinates(self):
+        self.select_window()
+        dialog = self.dialog
+        dialog.maximize_window.set(False)
+        dialog._window_mode_changed()
+        dialog._record()
+        self.assertEqual(self.core.record_point.call_args.kwargs["window_mode"], "recorded")
+        self.event("recorded", step=ClickStep("조회", 30, 40, 1000), geometry=Geometry(1000, 700, 96),
+                   browser="Chrome", window_mode="recorded")
+        self.event("idle")
+        self.assertEqual(dialog.profile.window_mode, "recorded")
+        self.assertFalse(dialog.maximize_window.get())
+        self.assertTrue(dialog.maximize_check.instate(["disabled"]))
+        dialog.maximize_window.set(True)  # A stale UI callback cannot change existing points.
+        dialog._window_mode_changed()
+        self.assertFalse(dialog.maximize_window.get())
+        self.assertEqual(dialog.profile.window_mode, "recorded")
+
+    def test_legacy_import_is_recorded_and_new_macro_restores_default(self):
+        legacy = {
+            "version": 1, "browser": "Edge", "geometry": {"width": 1200, "height": 800, "dpi": 96},
+            "steps": [{"name": "이전 조회", "x": 100, "y": 150, "wait_ms": 1000}],
+        }
+        profile = MacroProfile.from_dict(legacy)
+        with patch.object(macro_dialog.filedialog, "askopenfilename", return_value="legacy.json"), \
+             patch.object(macro_dialog, "load_profile", return_value=profile):
+            self.dialog._import_profile()
+        self.assertEqual(self.dialog.profile.window_mode, "recorded")
+        self.assertFalse(self.dialog.maximize_window.get())
+        self.assertTrue(self.dialog.maximize_check.instate(["disabled"]))
+        self.assertIn("기록한 창 크기로 자동 맞춤", self.dialog.message.get())
+        self.dialog._new_profile()
+        self.assertIsNone(self.dialog.profile)
+        self.assertTrue(self.dialog.maximize_window.get())
+        self.assertFalse(self.dialog.maximize_check.instate(["disabled"]))
+
+    def test_empty_profile_mode_change_discards_old_geometry_before_new_record(self):
+        self.select_window()
+        dialog = self.dialog
+        dialog.profile = MacroProfile("Chrome", Geometry(900, 600, 96), (), window_mode="recorded")
+        dialog._render_steps()
+        self.assertFalse(dialog.maximize_window.get())
+        self.assertFalse(dialog.maximize_check.instate(["disabled"]))
+        dialog.maximize_window.set(True)
+        dialog._window_mode_changed()
+        self.assertIsNone(dialog.profile)
+        dialog._record()
+        self.assertIsNone(self.core.record_point.call_args.kwargs["profile"])
+        self.assertEqual(self.core.record_point.call_args.kwargs["window_mode"], "maximize")
+
+    def test_preparing_and_countdown_do_not_require_an_unconditional_manual_focus_step(self):
+        self.select_window()
+        self.dialog._record()
+        self.event("preparing", message="선택한 창을 최대화하고 있습니다.")
+        self.assertIn("최대화", self.dialog.message.get())
+        self.event("countdown", mode="recording", remaining=4)
+        self.assertIn("창 크기 조정 후", self.dialog.message.get())
+        self.assertIn("포인터", self.dialog.message.get())
+        self.assertIn("뒤에 있으면", self.dialog.message.get())
+        self.assertNotIn("직접 클릭", self.dialog.message.get())
+
+    def test_recorded_event_cannot_change_existing_coordinate_mode(self):
+        self.select_window()
+        dialog = self.dialog
+        existing = self.profile()
+        dialog.profile = existing
+        dialog._record()
+        self.event("recorded", step=ClickStep("추가", 30, 40, 1000), geometry=existing.geometry,
+                   browser=existing.browser, window_mode="recorded")
+        self.assertIs(dialog.profile, existing)
+        self.assertIn("등록하지 못했습니다", dialog.message.get())
+        self.event("idle")
 
     def test_invalid_delay_cannot_start_backend(self):
         self.select_window()
