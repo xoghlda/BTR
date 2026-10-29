@@ -4,11 +4,12 @@
 
 ## 다운로드
 
+- **[저장소의 버전별 실행파일 폴더](releases/README.md)** · [v1.3.1 Windows 폴더](releases/v1.3.1/windows-x64/README.md) · **[폴더의 BTR.exe 바로 다운로드](https://github.com/xoghlda/BTR/raw/refs/heads/main/releases/v1.3.1/windows-x64/BTR.exe)**
 - **[Windows 64비트 ZIP 다운로드](https://github.com/xoghlda/BTR/releases/download/v1.3.1/BTR-v1.3.1-windows-x64.zip)** — 실행 파일, 한글 안내, 개발용 샘플 PDF를 함께 받습니다.
 - **[EXE만 다운로드](https://github.com/xoghlda/BTR/releases/download/v1.3.1/BTR-v1.3.1-windows-x64.exe)** — 실행 파일을 바로 받을 때 사용합니다.
 - [최신 릴리스와 변경사항](https://github.com/xoghlda/BTR/releases/latest) · [파일 검증용 SHA256SUMS.txt](https://github.com/xoghlda/BTR/releases/download/v1.3.1/SHA256SUMS.txt)
 
-**배포 EXE를 사용하면 Python을 설치할 필요가 없습니다.** 소스 코드는 이 저장소에서, 실행 파일은 GitHub Releases에서 배포합니다.
+**배포 EXE를 사용하면 Python을 설치할 필요가 없습니다.** 실행 파일은 저장소의 `releases/버전/windows-x64/` 폴더와 GitHub Releases 양쪽에서 받을 수 있습니다.
 
 현재 EXE에는 코드 서명이 없습니다. 조직 PC의 보안 정책이 실행을 제한하면 담당자에게 확인하세요. 소스 확인·실행 절차는 아래 개발용 안내에서 볼 수 있습니다.
 
@@ -199,7 +200,7 @@ python -m pip install -r requirements-dev.txt
 .\build.ps1
 ```
 
-빌드 결과는 `dist/출장증빙캡처_v1.3.1.exe`입니다. GitHub 릴리스에서는 `BTR-v1.3.1-windows-x64.exe`라는 다운로드 이름을 사용합니다. 빌드에는 PyInstaller 6.22.3을 사용하며 실행 파일·가져온 영수증·개인 설정은 소스 Git 이력에 포함하지 않습니다.
+빌드 결과는 `dist/출장증빙캡처_v1.3.1.exe`입니다. GitHub 릴리스에서는 `BTR-v1.3.1-windows-x64.exe`, 저장소의 버전별 폴더에서는 `BTR.exe`라는 이름을 사용하며 두 파일의 내용은 같습니다. 빌드에는 PyInstaller 6.22.3을 사용합니다. 검증한 배포 파일만 `releases/`에 보관하고 `dist/`의 임시 빌드 산출물, 개인 영수증·보고서·설정은 Git 이력에서 제외합니다.
 
 ### 테스트와 검증 범위
 

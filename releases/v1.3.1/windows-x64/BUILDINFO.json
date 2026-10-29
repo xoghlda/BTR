@@ -1,0 +1,16 @@
+{
+  "version": "1.3.1",
+  "platform": "windows-x64",
+  "python": "3.12.10",
+  "application_source_commit": "989171f9f079d18e53403c319f6478b1b22337b1",
+  "build_date": "2026-10-29",
+  "signed": false,
+  "exe_sha256": "6120848af49d5ad7f1dc5d54427a15c8c0162e4a5f8c3e016a58b93f2e3bca12",
+  "fixture_pdf_sha256": "6681e89b5e6a91427d1113eb2a217d5acb1e4b95f54baa7ecb0003c246ede24f",
+  "verification": {
+    "source_tests_passed": 125,
+    "credential_integration_test_run": false,
+    "packaged_manual_korail": true,
+    "packaged_car_train_forms": true
+  }
+}
