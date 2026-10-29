@@ -13,8 +13,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from . import __version__
 from .automation import AutomationWorker
 from .credentials import WindowsCredentialStore
+from .macro_dialog import BrowserMacroDialog
 from .models import FUEL_LABELS, SITE_LABELS, TRANSPORT_LABELS, TRANSPORT_SITES, RunRequest
 from .native_capture import NativeCaptureDialog
 from .platformpaths import load_settings, save_settings
@@ -25,7 +27,7 @@ class TripCaptureApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("출장 증빙 캡처 v1.3.1")
+        self.root.title(f"출장 증빙 캡처 v{__version__}")
         self.root.geometry("1000x830")
         self.root.minsize(900, 740)
         self.root.configure(background="#f1f5f9")
@@ -102,6 +104,9 @@ class TripCaptureApp:
         self._korail_browser_opened = False
         self._receipt_count = 0
         self._native_dialog: NativeCaptureDialog | None = None
+        self._macro_dialog: BrowserMacroDialog | None = None
+        self._closing_macro: BrowserMacroDialog | None = None
+        self._macro_busy = False
         self.status = tk.StringVar(value="출장 정보를 입력한 후 캡처를 시작하세요.")
         self.manual_instruction = tk.StringVar(value="사이트에서 화면을 준비해야 할 때 여기에 안내가 표시됩니다.")
         self.credential_status = tk.StringVar(value="저장한 로그인 정보가 없어도 직접 로그인할 수 있습니다.")
@@ -143,7 +148,11 @@ class TripCaptureApp:
 
         header = ttk.Frame(body)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Label(header, text="출장 증빙 캡처", font=("맑은 고딕", 21, "bold"), foreground="#0f284b").pack(anchor="w")
+        title_row = ttk.Frame(header)
+        title_row.pack(fill="x")
+        ttk.Label(title_row, text="출장 증빙 캡처", font=("맑은 고딕", 21, "bold"), foreground="#0f284b").pack(side="left")
+        self.macro_button = ttk.Button(title_row, text="브라우저 버튼 매크로", command=self._open_browser_macro)
+        self.macro_button.pack(side="right")
         modes = ttk.Frame(header)
         modes.pack(anchor="w", pady=(5, 0))
         self.mode_buttons = []
@@ -341,7 +350,7 @@ class TripCaptureApp:
 
     def _mode_changed(self) -> None:
         mode = self.transport_mode.get()
-        if self.run_state != "idle" or mode not in TRANSPORT_LABELS:
+        if self.run_state != "idle" or self._macro_dialog is not None or mode not in TRANSPORT_LABELS:
             self.transport_mode.set(self._visible_mode)
             return
         self._mode_sites[self._visible_mode] = tuple(site for site in TRANSPORT_SITES[self._visible_mode] if self.site_vars[site].get())
@@ -374,7 +383,7 @@ class TripCaptureApp:
             self._update_korail_details(select=True)
 
     def _open_korail(self) -> bool:
-        if self._closed:
+        if self._closed or self._macro_busy:
             return False
         try:
             opened = webbrowser.open("https://www.korail.com/ticket")
@@ -383,6 +392,36 @@ class TripCaptureApp:
         if not opened:
             self._log("기본 브라우저를 열지 못했습니다. 평소 브라우저에서 https://www.korail.com/ticket 에 직접 접속하세요. PDF·출력창 추가는 계속 사용할 수 있습니다.")
         return bool(opened)
+
+    def _open_browser_macro(self) -> None:
+        if self._closed:
+            return
+        if self._macro_dialog is not None:
+            if not self._macro_busy:
+                self._macro_dialog.lift()
+            return
+        if self.run_state == "running":
+            return
+        if self._native_dialog is not None and self._native_dialog.winfo_exists():
+            messagebox.showinfo("브라우저 버튼 매크로", "출력 창 저장을 마치고 매크로를 열어 주세요.", parent=self.root)
+            return
+        try:
+            self._macro_dialog = BrowserMacroDialog(self.root, self._macro_busy_changed, self._macro_closed)
+        except Exception as exc:
+            self._macro_dialog = None
+            messagebox.showerror("매크로 열기", self._safe_message(str(exc)), parent=self.root)
+        self._set_run_state(self.run_state)
+
+    def _macro_busy_changed(self, busy: bool) -> None:
+        self._macro_busy = bool(busy)
+        if not self._closed:
+            self._set_run_state(self.run_state)
+
+    def _macro_closed(self) -> None:
+        self._macro_dialog = None
+        self._macro_busy = False
+        if not self._closed:
+            self._set_run_state(self.run_state)
 
     def _choose_folder(self) -> None:
         directory = filedialog.askdirectory(parent=self.root, title="출장 증빙을 저장할 폴더", initialdir=self.output_dir.get() or str(Path.home()))
@@ -458,7 +497,7 @@ class TripCaptureApp:
         })
 
     def _start(self) -> None:
-        if self.run_state != "idle":
+        if self.run_state != "idle" or self._macro_dialog is not None:
             return
         mode = self.transport_mode.get()
         if mode == "car" and self.hipass_password.get() and self.site_vars["hipass"].get():
@@ -524,7 +563,7 @@ class TripCaptureApp:
             messagebox.showerror("시작 실패", self._safe_message(str(exc)), parent=self.root)
 
     def _capture(self) -> None:
-        if self.run_state == "waiting":
+        if self.run_state == "waiting" and self._macro_dialog is None:
             page_id = self._page_ids.get(self.page_selection.get())
             if not page_id:
                 self.manual_instruction.set("‘창 목록 새로고침’을 누른 후 저장할 브라우저 창을 선택해 주세요.")
@@ -535,11 +574,11 @@ class TripCaptureApp:
             self.worker.capture_current(page_id)
 
     def _refresh_pages(self) -> None:
-        if self.run_state == "waiting":
+        if self.run_state == "waiting" and self._macro_dialog is None:
             self.worker.refresh_pages()
 
     def _capture_external(self) -> None:
-        if self.run_state != "waiting" or self.current_site not in ("hipass", "korail") or self._closed:
+        if self.run_state != "waiting" or self.current_site not in ("hipass", "korail") or self._closed or self._macro_dialog is not None:
             return
         if self._native_dialog is not None and self._native_dialog.winfo_exists():
             self._native_dialog.lift()
@@ -547,7 +586,7 @@ class TripCaptureApp:
         self._native_dialog = NativeCaptureDialog(self.root, self._external_captured, site=self.current_site)
 
     def _external_captured(self, path: Path, title: str) -> None:
-        if self._closed or self.run_state != "waiting" or self.current_site not in ("hipass", "korail"):
+        if self._closed or self.run_state != "waiting" or self.current_site not in ("hipass", "korail") or self._macro_dialog is not None:
             path.unlink(missing_ok=True)
             return
         self._set_run_state("running")
@@ -561,7 +600,7 @@ class TripCaptureApp:
             self.manual_instruction.set("‘일반 브라우저·출력창 저장’을 다시 눌러 주세요.")
 
     def _import_pdf(self) -> None:
-        if self.run_state != "waiting" or self.current_site not in ("hipass", "korail") or self._closed:
+        if self.run_state != "waiting" or self.current_site not in ("hipass", "korail") or self._closed or self._macro_dialog is not None:
             return
         selected = filedialog.askopenfilename(
             parent=self.root, title=f"저장한 {SITE_LABELS.get(self.current_site, '')} PDF 선택",
@@ -578,7 +617,7 @@ class TripCaptureApp:
             self.status.set("영수증 PDF를 전달하지 못했습니다. 파일을 다시 선택해 주세요.")
 
     def _sync_page_controls(self) -> None:
-        waiting = self.run_state == "waiting" and not self._closed
+        waiting = self.run_state == "waiting" and not self._closed and self._macro_dialog is None
         selected = self._page_ids.get(self.page_selection.get())
         managed = waiting and not self._browserless
         self.capture_button.state(["!disabled"] if managed and selected else ["disabled"])
@@ -592,7 +631,7 @@ class TripCaptureApp:
         self.korail_retry_button.state(["!disabled"] if waiting and self.current_site == "korail" else ["disabled"])
 
     def _finish_receipts(self) -> None:
-        if self.run_state != "waiting" or self.current_site != "korail" or self._closed:
+        if self.run_state != "waiting" or self.current_site != "korail" or self._closed or self._macro_dialog is not None:
             return
         self._set_run_state("running")
         self.status.set("코레일 영수증 수집을 마무리하고 있습니다.")
@@ -603,7 +642,7 @@ class TripCaptureApp:
             self.status.set("수집 완료를 전달하지 못했습니다. 다시 눌러 주세요.")
 
     def _retry_korail(self) -> None:
-        if self.run_state != "waiting" or self.current_site != "korail" or self._closed:
+        if self.run_state != "waiting" or self.current_site != "korail" or self._closed or self._macro_dialog is not None:
             return
         if self._browserless:
             self._open_korail()
@@ -617,7 +656,7 @@ class TripCaptureApp:
             self.status.set("코레일 이용내역 조회를 시작하지 못했습니다. 다시 눌러 주세요.")
 
     def _skip(self) -> None:
-        if self.run_state == "waiting":
+        if self.run_state == "waiting" and self._macro_dialog is None:
             self._set_run_state("running")
             if self._next_site:
                 next_label = SITE_LABELS.get(self._next_site, self._next_site)
@@ -668,16 +707,20 @@ class TripCaptureApp:
         if state not in ("idle", "running", "waiting"):
             return
         self.run_state = state
+        macro_open = self._macro_dialog is not None
         for widget in self.input_controls:
-            if state == "idle":
+            if state == "idle" and not macro_open:
                 widget.state(["!disabled"])
                 if isinstance(widget, ttk.Combobox):
                     widget.state(["readonly"])
             else:
                 widget.state(["disabled"])
-        self.start_button.state(["!disabled"] if state == "idle" else ["disabled"])
-        self.skip_button.state(["!disabled"] if state == "waiting" else ["disabled"])
-        self.cancel_button.state(["disabled"] if state == "idle" else ["!disabled"])
+        self.start_button.state(["!disabled"] if state == "idle" and not macro_open else ["disabled"])
+        self.skip_button.state(["!disabled"] if state == "waiting" and not macro_open else ["disabled"])
+        self.cancel_button.state(["disabled"] if state == "idle" or macro_open else ["!disabled"])
+        self.macro_button.state(["disabled"] if self._closed or self._macro_busy or (state == "running" and not macro_open) else ["!disabled"])
+        self.report_button.state(["!disabled"] if self.last_report and not macro_open and not self._closed else ["disabled"])
+        self.folder_button.state(["!disabled"] if self.last_output and not macro_open and not self._closed else ["disabled"])
         self._sync_page_controls()
 
     def _poll_events(self) -> None:
@@ -764,8 +807,8 @@ class TripCaptureApp:
             output = event.get("output_dir")
             self.last_report = Path(report) if report else None
             self.last_output = Path(output) if output else None
-            self.report_button.state(["!disabled"] if self.last_report else ["disabled"])
-            self.folder_button.state(["!disabled"] if self.last_output else ["disabled"])
+            self.report_button.state(["!disabled"] if self.last_report and self._macro_dialog is None else ["disabled"])
+            self.folder_button.state(["!disabled"] if self.last_output and self._macro_dialog is None else ["disabled"])
             count = max(0, int(event.get("count", 0)))
             site_count = max(0, int(event.get("site_count", count)))
             expected = len(self._requested_sites)
@@ -805,7 +848,7 @@ class TripCaptureApp:
         self.log_widget.configure(state="disabled")
 
     def _open_path(self, path: Path | None) -> None:
-        if path is None:
+        if path is None or self._macro_dialog is not None:
             return
         if not path.exists():
             messagebox.showerror("결과 열기", "결과 파일 또는 폴더를 찾을 수 없습니다.", parent=self.root)
@@ -828,6 +871,9 @@ class TripCaptureApp:
         if self._closed:
             return
         self._closed = True
+        self._closing_macro = self._macro_dialog
+        if self._closing_macro is not None:
+            self._closing_macro.close()
         self.hipass_password.set("")
         self._set_run_state("running")
         self.capture_button.state(["disabled"])
@@ -845,7 +891,7 @@ class TripCaptureApp:
         self._wait_for_worker_close()
 
     def _wait_for_worker_close(self) -> None:
-        if self.worker.is_alive():
+        if self.worker.is_alive() or (self._closing_macro is not None and self._closing_macro.is_busy()):
             if time.monotonic() >= self._close_deadline:
                 self.status.set("브라우저 응답을 기다리는 중입니다.")
                 self.manual_instruction.set("진행 중인 조회를 마치고 브라우저를 안전하게 닫고 있습니다.")

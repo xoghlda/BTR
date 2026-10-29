@@ -21,3 +21,4 @@ travel_report.html
 car_settlement.html
 rail_settlement.html
 manifest.json
+*.btr-macro.json

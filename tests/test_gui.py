@@ -416,7 +416,7 @@ class GuiTests(unittest.TestCase):
         self.assertIn("누락", self.app.manual_instruction.get())
 
     def test_step_shows_current_and_next_site_without_extra_rows(self):
-        self.assertIn("v1.3", self.root.title())
+        self.assertIn("v1.4.0", self.root.title())
         self.app._handle_event({"type": "step", "site": "naver", "index": 1, "total": 3, "next_site": "opinet", "sites": ["naver", "opinet", "hipass"]})
         self.app._handle_event({"type": "manual", "site": "naver", "message": "경로 준비"})
         title = self.app.progress_frame.cget("text")
@@ -504,6 +504,75 @@ class GuiTests(unittest.TestCase):
         self.app._handle_event({"type": "error", "message": "입력값 PRIVATE_PASSWORD 처리 실패"})
         self.assertNotIn("PRIVATE_PASSWORD", self.app.status.get())
         self.assertNotIn("PRIVATE_PASSWORD", self.app.log_widget.get("1.0", "end"))
+
+    def test_macro_manager_is_singleton_and_blocks_competing_capture_actions(self):
+        self.app._handle_event({"type": "manual", "site": "korail", "message": "영수증 준비"})
+        self.app.last_report = Path("C:/development/report.html")
+        self.app.last_output = Path("C:/development")
+        self.app._set_run_state("waiting")
+        dialog = Mock()
+        dialog.is_busy.return_value = False
+        with patch.object(gui, "BrowserMacroDialog", return_value=dialog) as factory:
+            self.app.macro_button.invoke()
+            self.app._open_browser_macro()
+        factory.assert_called_once_with(self.root, self.app._macro_busy_changed, self.app._macro_closed)
+        dialog.lift.assert_called_once()
+        self.assertTrue(self.app.pdf_button.instate(["disabled"]))
+        self.assertTrue(self.app.external_button.instate(["disabled"]))
+        self.assertTrue(self.app.finish_button.instate(["disabled"]))
+        self.assertTrue(self.app.report_button.instate(["disabled"]))
+        self.assertTrue(self.app.folder_button.instate(["disabled"]))
+        self.worker.refresh_pages.reset_mock()
+        self.app._capture()
+        self.app._refresh_pages()
+        self.app._finish_receipts()
+        self.app._skip()
+        self.worker.capture_current.assert_not_called()
+        self.worker.refresh_pages.assert_not_called()
+        self.worker.finish_receipts.assert_not_called()
+        self.worker.skip_current.assert_not_called()
+        self.app._macro_busy_changed(True)
+        self.assertTrue(self.app.macro_button.instate(["disabled"]))
+        self.app._macro_closed()
+        self.assertEqual(self.app.run_state, "waiting")
+        self.assertFalse(self.app.pdf_button.instate(["disabled"]))
+        self.assertFalse(self.app.external_button.instate(["disabled"]))
+        self.assertFalse(self.app.report_button.instate(["disabled"]))
+        self.assertFalse(self.app.folder_button.instate(["disabled"]))
+
+    def test_macro_manager_blocks_run_and_refuses_running_worker_or_native_capture(self):
+        dialog = Mock()
+        with patch.object(gui, "BrowserMacroDialog", return_value=dialog) as factory:
+            self.app._set_run_state("running")
+            self.app._open_browser_macro()
+            factory.assert_not_called()
+            self.app._set_run_state("idle")
+            self.app._native_dialog = Mock()
+            self.app._native_dialog.winfo_exists.return_value = True
+            self.app._open_browser_macro()
+            factory.assert_not_called()
+            self.app._native_dialog = None
+            self.app._open_browser_macro()
+            self.app._start()
+        self.worker.submit.assert_not_called()
+        self.assertTrue(self.app.start_button.instate(["disabled"]))
+        self.app._macro_closed()
+        self.assertFalse(self.app.start_button.instate(["disabled"]))
+
+    def test_close_waits_for_macro_stop_before_destroying_root(self):
+        dialog = Mock()
+        dialog.is_busy.return_value = True
+        self.app._macro_dialog = dialog
+        with patch.object(self.root, "after") as after:
+            self.app._close()
+        dialog.close.assert_called_once()
+        self.worker.shutdown.assert_called_once()
+        after.assert_called_once_with(100, self.app._wait_for_worker_close)
+        self.assertEqual(self.root.winfo_exists(), 1)
+        dialog.is_busy.return_value = False
+        self.app._wait_for_worker_close()
+        with self.assertRaises(tk.TclError):
+            self.root.winfo_exists()
 
     def test_close_waits_for_worker_without_blocking_tk(self):
         self.worker.is_alive.return_value = True

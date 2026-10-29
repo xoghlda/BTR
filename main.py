@@ -142,6 +142,10 @@ def self_check_manual_korail(source: Path, output_dir: Path) -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-check-macro":
+        from trip_capture.macro_selfcheck import run_macro_selfcheck
+        run_macro_selfcheck(Path(sys.argv[2]))
+        return
     if len(sys.argv) == 4 and sys.argv[1] == "--self-check-manual-korail":
         self_check_manual_korail(Path(sys.argv[2]), Path(sys.argv[3]))
         return
