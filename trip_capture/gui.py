@@ -17,6 +17,7 @@ from . import __version__
 from .automation import AutomationWorker
 from .credentials import WindowsCredentialStore
 from .macro_dialog import BrowserMacroDialog
+from .workflow_dialog import WorkflowDialog
 from .models import FUEL_LABELS, SITE_LABELS, TRANSPORT_LABELS, TRANSPORT_SITES, RunRequest
 from .native_capture import NativeCaptureDialog
 from .platformpaths import load_settings, save_settings
@@ -104,8 +105,8 @@ class TripCaptureApp:
         self._korail_browser_opened = False
         self._receipt_count = 0
         self._native_dialog: NativeCaptureDialog | None = None
-        self._macro_dialog: BrowserMacroDialog | None = None
-        self._closing_macro: BrowserMacroDialog | None = None
+        self._macro_dialog: BrowserMacroDialog | WorkflowDialog | None = None
+        self._closing_macro: BrowserMacroDialog | WorkflowDialog | None = None
         self._macro_busy = False
         self.status = tk.StringVar(value="출장 정보를 입력한 후 캡처를 시작하세요.")
         self.manual_instruction = tk.StringVar(value="사이트에서 화면을 준비해야 할 때 여기에 안내가 표시됩니다.")
@@ -153,6 +154,8 @@ class TripCaptureApp:
         ttk.Label(title_row, text="출장 증빙 캡처", font=("맑은 고딕", 21, "bold"), foreground="#0f284b").pack(side="left")
         self.macro_button = ttk.Button(title_row, text="브라우저 버튼 매크로", command=self._open_browser_macro)
         self.macro_button.pack(side="right")
+        self.workflow_button = ttk.Button(title_row, text="로그인부터 전체 자동화", command=self._open_workflow)
+        self.workflow_button.pack(side="right", padx=(0, 8))
         modes = ttk.Frame(header)
         modes.pack(anchor="w", pady=(5, 0))
         self.mode_buttons = []
@@ -416,6 +419,58 @@ class TripCaptureApp:
         self._macro_busy = bool(busy)
         if not self._closed:
             self._set_run_state(self.run_state)
+
+    def _workflow_request(self) -> RunRequest:
+        mode = self.transport_mode.get()
+        if mode not in TRANSPORT_SITES:
+            raise ValueError("출장 유형을 선택해 주세요.")
+        for value in (self.trip_date.get().strip(), self.trip_end_date.get().strip()):
+            if value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                raise ValueError("출장 날짜를 YYYY-MM-DD 형식으로 입력해 주세요.")
+        if not self.output_dir.get().strip():
+            raise ValueError("증빙을 저장할 폴더를 선택해 주세요.")
+        request = RunRequest(
+            trip_date=self.trip_date.get().strip(), origin=self.origin.get().strip(),
+            destination=self.destination.get().strip(),
+            fuel=next((code for code, label in FUEL_LABELS.items() if label == self.fuel.get()), "diesel"),
+            sites=tuple(site for site in TRANSPORT_SITES[mode] if self.site_vars[site].get()),
+            output_dir=Path(self.output_dir.get().strip()).expanduser(), browser="msedge",
+            transport_mode=mode, **{name: variable.get().strip() for name, variable in self.trip_details.items()},
+        )
+        request.validate()
+        return request
+
+    def _open_workflow(self) -> None:
+        if self._closed or self.run_state != "idle":
+            return
+        if self._macro_dialog is not None:
+            if not self._macro_busy:
+                self._macro_dialog.lift()
+            return
+        if self._native_dialog is not None and self._native_dialog.winfo_exists():
+            return
+        try:
+            request = self._workflow_request()
+            self._macro_dialog = WorkflowDialog(
+                self.root, self._macro_busy_changed, self._macro_closed,
+                request=request, on_report=self._workflow_report,
+            )
+        except ValueError as error:
+            messagebox.showerror("출장 정보 확인", str(error), parent=self.root)
+        except Exception:
+            self._macro_dialog = None
+            messagebox.showerror("전체 자동화", "전체 자동화 창을 열지 못했습니다. 프로그램을 다시 실행해 주세요.", parent=self.root)
+        self._set_run_state(self.run_state)
+
+    def _workflow_report(self, report: Path) -> None:
+        if self._closed:
+            return
+        self.last_report = Path(report)
+        self.last_output = self.last_report.parent
+        self.status.set("전체 자동화에서 저장한 보고서를 확인할 수 있습니다.")
+        self.manual_instruction.set("자동화 창을 닫고 ‘보고서 열기’를 눌러 원본 화면·PDF와 누락 여부를 확인하세요.")
+        self._log("전체 자동화의 증빙과 보고서를 저장했습니다.")
+        self._set_run_state(self.run_state)
 
     def _macro_closed(self) -> None:
         self._macro_dialog = None
@@ -719,6 +774,7 @@ class TripCaptureApp:
         self.skip_button.state(["!disabled"] if state == "waiting" and not macro_open else ["disabled"])
         self.cancel_button.state(["disabled"] if state == "idle" or macro_open else ["!disabled"])
         self.macro_button.state(["disabled"] if self._closed or self._macro_busy or (state == "running" and not macro_open) else ["!disabled"])
+        self.workflow_button.state(["!disabled"] if state == "idle" and not macro_open and not self._closed else ["disabled"])
         self.report_button.state(["!disabled"] if self.last_report and not macro_open and not self._closed else ["disabled"])
         self.folder_button.state(["!disabled"] if self.last_output and not macro_open and not self._closed else ["disabled"])
         self._sync_page_controls()

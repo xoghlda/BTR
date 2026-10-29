@@ -22,3 +22,4 @@ car_settlement.html
 rail_settlement.html
 manifest.json
 *.btr-macro.json
+*.btr-workflow.json

@@ -4,6 +4,7 @@
 
 | 버전 | 운영체제 | 폴더와 사용 안내 | 실행파일 |
 | --- | --- | --- | --- |
+| v1.5.0 | Windows 64비트 | [v1.5.0/windows-x64](v1.5.0/windows-x64/README.md) | [BTR.exe 다운로드](https://github.com/xoghlda/BTR/raw/refs/heads/main/releases/v1.5.0/windows-x64/BTR.exe) |
 | v1.4.1 | Windows 64비트 | [v1.4.1/windows-x64](v1.4.1/windows-x64/README.md) | [BTR.exe 다운로드](https://github.com/xoghlda/BTR/raw/refs/heads/main/releases/v1.4.1/windows-x64/BTR.exe) |
 | v1.4.0 | Windows 64비트 | [v1.4.0/windows-x64](v1.4.0/windows-x64/README.md) | [BTR.exe 다운로드](https://github.com/xoghlda/BTR/raw/refs/heads/main/releases/v1.4.0/windows-x64/BTR.exe) |
 | v1.3.1 | Windows 64비트 | [v1.3.1/windows-x64](v1.3.1/windows-x64/README.md) | [BTR.exe 다운로드](https://github.com/xoghlda/BTR/raw/refs/heads/main/releases/v1.3.1/windows-x64/BTR.exe) |
@@ -15,3 +16,5 @@ ZIP 패키지는 [GitHub Releases](https://github.com/xoghlda/BTR/releases)에�
 v1.4.0은 일반 브라우저 창을 직접 선택하고 버튼 위치를 등록해 순서대로 왼쪽 클릭하는 매크로를 추가합니다. 로그인은 사용자가 먼저 완료해야 하며, 매크로가 조회·영수증 발급의 성공을 확인하지는 않습니다. IE 모드 강제 전환이나 코레일 접근 차단 해제 기능은 아닙니다. 등록·재생·긴급 중지 방법은 프로젝트 README의 매크로 안내를 확인하세요.
 
 v1.4.1은 등록·실행 카운트다운 전에 선택 창을 자동 최대화하거나 기록한 내용 영역 크기로 맞춥니다. 새 매크로는 자동 최대화가 기본이며 기존 v1 JSON은 기록 크기 모드로 불러옵니다. 프로필 v2는 창 모드를 보관합니다. 처음 한 번 버튼 좌표를 등록해야 하며, DPI·작업영역이 맞지 않으면 좌표를 스케일하지 않고 중지합니다. Windows 전체 해상도나 브라우저 확대율·스크롤은 변경하지 않습니다.
+
+v1.5.0은 로그인 정보 입력부터 조회·새 창 전환·화면 저장·새 PDF 수집·보고서 작성까지 편집 가능한 전체 흐름을 추가합니다. 처음 한 번 사이트의 칸·버튼 좌표를 등록하고 계정을 설정해야 합니다. 보안문자·추가 인증은 직접 완료 후 이어서 진행합니다. 실제 계정의 로그인·발급 성공을 검증한 배포는 아닙니다.

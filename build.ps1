@@ -21,6 +21,7 @@ try {
         '--collect-all', 'playwright',
         '--collect-all', 'pypdfium2',
         '--collect-all', 'pypdfium2_raw',
+        '--add-data', ((Join-Path $workspaceRoot 'licenses\comtypes-LICENSE.txt') + ';licenses'),
         '--distpath', (Join-Path $workspaceRoot 'dist'),
         '--workpath', (Join-Path $workspaceRoot 'build'),
         '--specpath', $workspaceRoot,
