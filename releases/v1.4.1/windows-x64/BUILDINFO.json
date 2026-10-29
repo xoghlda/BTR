@@ -1,0 +1,17 @@
+{
+  "version": "1.4.1",
+  "platform": "windows-x64",
+  "build_date": "2026-10-29",
+  "application_source_commit": "bad0a6068a4a39ddfe614ac6baf2569b4f6a371d",
+  "signed": false,
+  "exe_sha256": "4f9065e39ae5fde631771fff4d0b8573878905ed3449706bd764af0faf26293d",
+  "verification": {
+    "tests_passed": 189,
+    "credential_integration_excluded": 1,
+    "packaged_macro_fake_adapter": true,
+    "packaged_pdf_collection": true,
+    "packaged_car_train_forms": true,
+    "live_browser_input_tested": false,
+    "live_native_window_prepare_tested": false
+  }
+}
